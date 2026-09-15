@@ -1,0 +1,22 @@
+# Виртуальное окружение
+venv/
+.venv/
+__pycache__/
+*.pyc
+
+# Модели и кэш HuggingFace
+.cache/
+*.ogg
+*_transcript.txt
+
+# ffmpeg (слишком большой для git)
+ffmpeg/
+!ffmpeg/.gitkeep
+
+# IDE
+.vscode/
+.idea/
+
+# Логи и временное
+*.log
+temp/

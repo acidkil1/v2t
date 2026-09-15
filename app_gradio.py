@@ -1,15 +1,12 @@
 """
 app_gradio.py — веб-интерфейс для v2t на Gradio.
-
-Запуск:
-    python app_gradio.py
-    или start_gui.bat
 """
 
 from __future__ import annotations
 
 import shutil
 import tempfile
+import time
 import traceback
 from pathlib import Path
 
@@ -18,35 +15,34 @@ import gradio as gr
 from v2t import transcribe
 
 
-# ---------- Константы ----------
 MODELS = ["tiny", "base", "small", "medium", "large-v3"]
 LANGS = ["ru", "en", "auto", "uk", "de", "fr", "es", "it", "pl", "tr"]
 DEVICES = ["auto", "cuda", "cpu"]
 
 
-# ---------- Основная функция-обёртка ----------
 def run_transcribe(
-    video_path: str | None,
+    video_path,
     model_name: str,
     lang: str,
     device: str,
     save_to_source: bool,
     progress: gr.Progress = gr.Progress(track_tqdm=False),
 ):
-    """
-    Возвращает: (текст, путь_к_txt_для_скачивания, статус_строка, время_строка)
-    """
-    import time
+    """Возвращает: (текст, путь_к_txt, статус, время)"""
     t0 = time.time()
 
     if not video_path:
         return "", None, "⚠️ Загрузи видеофайл или укажи путь.", ""
 
-    video = Path(video_path).strip().strip('"')
+    # Gradio может отдать str или Path
+    if isinstance(video_path, Path):
+        video = video_path
+    else:
+        video = Path(str(video_path).strip().strip('"'))
+
     if not video.exists():
         return "", None, f"❌ Файл не найден: {video}", ""
 
-    # Куда сохранять
     if save_to_source:
         work_dir = video.parent
         cleanup_after = False
@@ -86,7 +82,6 @@ def run_transcribe(
             f"⏱ {elapsed:.1f} сек (с ошибкой)",
         )
 
-    # Готовим файл для скачивания с человеческим именем
     final_txt = work_dir / f"{video.stem}_transcript.txt"
     if result.transcript_path != final_txt:
         try:
@@ -107,11 +102,7 @@ def run_transcribe(
         f"- Время: `{elapsed:.1f} сек`"
     )
 
-    # Если писали в temp — копируем результат в постоянную папку,
-    # иначе Gradio не сможет отдать файл после очистки temp.
     if cleanup_after:
-        import os
-        import platform
         cache_dir = Path(tempfile.gettempdir()) / "v2t_results"
         cache_dir.mkdir(parents=True, exist_ok=True)
         cached = cache_dir / final_txt.name
@@ -123,20 +114,20 @@ def run_transcribe(
 
     return result.text, str(final_txt), status, elapsed_str
 
-# ---------- Сборка интерфейса ----------
+
 def build_ui() -> gr.Blocks:
     with gr.Blocks(title="v2t — Video to Text") as demo:
         gr.Markdown(
             "# 🎬 v2t — транскрибация видео в текст\n"
-            "Перетащи видео, выбери пресет — получишь текст и `.txt` с таймкодами."
+            "Загрузи видеофайл (или вставь путь), выбери пресет — получишь текст и `.txt` с таймкодами."
         )
 
         with gr.Row():
-            # ---------- Левая колонка: входные данные ----------
             with gr.Column(scale=1):
-                video_in = gr.Video(
+                video_in = gr.File(
                     label="Видео (drag & drop или клик)",
-                    sources=["upload"],
+                    file_types=["video", "audio"],
+                    type="filepath",
                 )
                 path_in = gr.Textbox(
                     label="…или путь к файлу на диске",
@@ -156,15 +147,9 @@ def build_ui() -> gr.Blocks:
 
                 with gr.Group(visible=False) as manual_group:
                     with gr.Row():
-                        model_dd = gr.Dropdown(
-                            MODELS, value="small", label="Модель",
-                        )
-                        lang_dd = gr.Dropdown(
-                            LANGS, value="ru", label="Язык",
-                        )
-                        device_dd = gr.Dropdown(
-                            DEVICES, value="auto", label="Устройство",
-                        )
+                        model_dd = gr.Dropdown(MODELS, value="small", label="Модель")
+                        lang_dd = gr.Dropdown(LANGS, value="ru", label="Язык")
+                        device_dd = gr.Dropdown(DEVICES, value="auto", label="Устройство")
 
                 save_to_source = gr.Checkbox(
                     value=True,
@@ -173,17 +158,12 @@ def build_ui() -> gr.Blocks:
 
                 run_btn = gr.Button("🚀 Транскрибировать", variant="primary")
 
-            # ---------- Правая колонка: результат ----------
             with gr.Column(scale=2):
-                text_out = gr.Textbox(
-                    label="Транскрипт",
-                    lines=20,
-                )
+                text_out = gr.Textbox(label="Транскрипт", lines=20)
                 file_out = gr.File(label="📄 Скачать .txt с таймкодами")
                 elapsed_out = gr.Markdown("")
                 status_out = gr.Markdown("Готов к работе.")
 
-        # --- Логика пресетов ---
         def apply_preset(p):
             if p == "fast":
                 return (
@@ -206,7 +186,6 @@ def build_ui() -> gr.Blocks:
                     gr.update(value="auto", interactive=False),
                     gr.update(visible=False),
                 )
-            # custom
             return (
                 gr.update(interactive=True),
                 gr.update(interactive=True),
@@ -220,13 +199,11 @@ def build_ui() -> gr.Blocks:
             outputs=[model_dd, lang_dd, device_dd, manual_group],
         )
 
-        # --- Выбор источника ---
         def pick_source(video_path, manual_path):
             if video_path:
                 return video_path
             return manual_path or ""
 
-        # --- Запуск ---
         run_btn.click(
             fn=lambda v, p, m, l, d, s: run_transcribe(pick_source(v, p), m, l, d, s),
             inputs=[video_in, path_in, model_dd, lang_dd, device_dd, save_to_source],
@@ -243,10 +220,10 @@ def build_ui() -> gr.Blocks:
 def main() -> None:
     demo = build_ui()
     demo.queue().launch(
+        inbrowser=True,
         server_name="127.0.0.1",
         server_port=7860,
         show_error=True,
-        theme=gr.themes.Soft(),
     )
 
 

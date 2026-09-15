@@ -30,30 +30,43 @@ def run_transcribe(
     model_name: str,
     lang: str,
     device: str,
+    save_to_source: bool,
     progress: gr.Progress = gr.Progress(track_tqdm=False),
 ):
     """
-    Вызывается Gradio при нажатии кнопки.
-    Возвращает: (текст, путь_к_txt_для_скачивания, статус)
+    Возвращает: (текст, путь_к_txt_для_скачивания, статус_строка, время_строка)
     """
+    import time
+    t0 = time.time()
+
     if not video_path:
-        return "", None, "⚠️ Загрузи видеофайл или укажи путь."
+        return "", None, "⚠️ Загрузи видеофайл или укажи путь.", ""
 
-    # Пути: работаем во временной папке Gradio, чтобы не мусорить
-    video = Path(video_path)
+    video = Path(video_path).strip().strip('"')
     if not video.exists():
-        return "", None, f"❌ Файл не найден: {video}"
+        return "", None, f"❌ Файл не найден: {video}", ""
 
-    work_dir = Path(tempfile.mkdtemp(prefix="v2t_gui_"))
+    # Куда сохранять
+    if save_to_source:
+        work_dir = video.parent
+        cleanup_after = False
+    else:
+        work_dir = Path(tempfile.mkdtemp(prefix="v2t_gui_"))
+        cleanup_after = True
 
-    # Прогресс-бар: у нас 3 смысловых этапа
+    STAGE_PCT = {
+        "extract": 0.10,
+        "download": 0.30,
+        "model": 0.45,
+        "transcribe": 0.65,
+        "done": 1.00,
+    }
+
     def on_progress(stage: str, info: str) -> None:
-        # Gradio ждёт значение от 0 до 1
-        mapping = {"extract": 0.15, "model": 0.35, "transcribe": 0.6, "done": 1.0}
-        progress(mapping.get(stage, 0.5), desc=info or stage)
+        progress(STAGE_PCT.get(stage, 0.5), desc=info or stage)
 
     try:
-        progress(0.05, desc="Старт...")
+        progress(0.02, desc="Старт...")
         result = transcribe(
             video,
             model=model_name,
@@ -65,93 +78,171 @@ def run_transcribe(
         )
     except Exception as e:
         tb = traceback.format_exc()
-        return "", None, f"❌ Ошибка: {e}\n\n{tb}"
-    finally:
-        # Чистим промежуточный .ogg, если остался
-        for f in work_dir.glob("*.ogg"):
-            try:
-                f.unlink()
-            except OSError:
-                pass
+        elapsed = time.time() - t0
+        return (
+            "",
+            None,
+            f"❌ **{type(e).__name__}:** {e}\n\n```\n{tb}\n```",
+            f"⏱ {elapsed:.1f} сек (с ошибкой)",
+        )
 
-    # Копируем результат во временный файл с «человеческим» именем,
-    # чтобы пользователь скачал lesson_transcript.txt, а не случайный хэш.
-    download_path = work_dir / f"{video.stem}_transcript.txt"
-    if not download_path.exists():
-        download_path = result.transcript_path
+    # Готовим файл для скачивания с человеческим именем
+    final_txt = work_dir / f"{video.stem}_transcript.txt"
+    if result.transcript_path != final_txt:
+        try:
+            shutil.copy2(result.transcript_path, final_txt)
+        except OSError:
+            final_txt = result.transcript_path
+
+    elapsed = time.time() - t0
+    elapsed_str = f"⏱ {elapsed:.1f} сек"
 
     status = (
-        f"✅ Готово\n"
-        f"Язык: {lang} | Модель: {model_name} | Устройство: {device}\n"
-        f"Сегментов: {len(result.segments)} | Символов: {len(result.text)}"
+        f"✅ **Готово**\n\n"
+        f"- Модель: `{model_name}`\n"
+        f"- Язык: `{lang}`\n"
+        f"- Устройство: `{device}`\n"
+        f"- Сегментов: `{len(result.segments)}`\n"
+        f"- Символов: `{len(result.text)}`\n"
+        f"- Время: `{elapsed:.1f} сек`"
     )
-    return result.text, str(download_path), status
 
+    # Если писали в temp — копируем результат в постоянную папку,
+    # иначе Gradio не сможет отдать файл после очистки temp.
+    if cleanup_after:
+        import os
+        import platform
+        cache_dir = Path(tempfile.gettempdir()) / "v2t_results"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        cached = cache_dir / final_txt.name
+        try:
+            shutil.copy2(final_txt, cached)
+            final_txt = cached
+        except OSError:
+            pass
+
+    return result.text, str(final_txt), status, elapsed_str
 
 # ---------- Сборка интерфейса ----------
 def build_ui() -> gr.Blocks:
     with gr.Blocks(title="v2t — Video to Text") as demo:
         gr.Markdown(
             "# 🎬 v2t — транскрибация видео в текст\n"
-            "Загрузи видео или вставь путь к нему, выбери модель и язык — "
-            "получишь текст и `.txt` с таймкодами."
+            "Перетащи видео, выбери пресет — получишь текст и `.txt` с таймкодами."
         )
 
         with gr.Row():
+            # ---------- Левая колонка: входные данные ----------
             with gr.Column(scale=1):
                 video_in = gr.Video(
-                    label="Видео (загрузи файл)",
+                    label="Видео (drag & drop или клик)",
                     sources=["upload"],
                 )
                 path_in = gr.Textbox(
-                    label="…или путь к видео на диске",
+                    label="…или путь к файлу на диске",
                     placeholder=r"C:\path\to\video.mp4",
                 )
-                with gr.Row():
-                    model_dd = gr.Dropdown(
-                        MODELS, value="small", label="Модель",
-                        info="tiny→large-v3: больше = точнее, но медленнее",
-                    )
-                    lang_dd = gr.Dropdown(
-                        LANGS, value="ru", label="Язык",
-                    )
-                    device_dd = gr.Dropdown(
-                        DEVICES, value="auto", label="Устройство",
-                    )
+
+                preset = gr.Radio(
+                    choices=[
+                        ("⚡ Быстро (tiny, CPU)", "fast"),
+                        ("⚖️ Сбалансированно (small, auto)", "balanced"),
+                        ("🎯 Качественно (medium, auto)", "quality"),
+                        ("🔧 Вручную", "custom"),
+                    ],
+                    value="balanced",
+                    label="Пресет",
+                )
+
+                with gr.Group(visible=False) as manual_group:
+                    with gr.Row():
+                        model_dd = gr.Dropdown(
+                            MODELS, value="small", label="Модель",
+                        )
+                        lang_dd = gr.Dropdown(
+                            LANGS, value="ru", label="Язык",
+                        )
+                        device_dd = gr.Dropdown(
+                            DEVICES, value="auto", label="Устройство",
+                        )
+
+                save_to_source = gr.Checkbox(
+                    value=True,
+                    label="Сохранять .txt рядом с видео (иначе — во временную папку)",
+                )
 
                 run_btn = gr.Button("🚀 Транскрибировать", variant="primary")
 
+            # ---------- Правая колонка: результат ----------
             with gr.Column(scale=2):
                 text_out = gr.Textbox(
                     label="Транскрипт",
-                    lines=22,
+                    lines=20,
                 )
                 file_out = gr.File(label="📄 Скачать .txt с таймкодами")
+                elapsed_out = gr.Markdown("")
                 status_out = gr.Markdown("Готов к работе.")
 
+        # --- Логика пресетов ---
+        def apply_preset(p):
+            if p == "fast":
+                return (
+                    gr.update(value="tiny", interactive=False),
+                    gr.update(value="ru", interactive=False),
+                    gr.update(value="cpu", interactive=False),
+                    gr.update(visible=False),
+                )
+            if p == "balanced":
+                return (
+                    gr.update(value="small", interactive=False),
+                    gr.update(value="ru", interactive=False),
+                    gr.update(value="auto", interactive=False),
+                    gr.update(visible=False),
+                )
+            if p == "quality":
+                return (
+                    gr.update(value="medium", interactive=False),
+                    gr.update(value="ru", interactive=False),
+                    gr.update(value="auto", interactive=False),
+                    gr.update(visible=False),
+                )
+            # custom
+            return (
+                gr.update(interactive=True),
+                gr.update(interactive=True),
+                gr.update(interactive=True),
+                gr.update(visible=True),
+            )
+
+        preset.change(
+            fn=apply_preset,
+            inputs=[preset],
+            outputs=[model_dd, lang_dd, device_dd, manual_group],
+        )
+
+        # --- Выбор источника ---
         def pick_source(video_path, manual_path):
             if video_path:
                 return video_path
             return manual_path or ""
 
+        # --- Запуск ---
         run_btn.click(
-            fn=lambda v, p, m, l, d: run_transcribe(pick_source(v, p), m, l, d),
-            inputs=[video_in, path_in, model_dd, lang_dd, device_dd],
-            outputs=[text_out, file_out, status_out],
+            fn=lambda v, p, m, l, d, s: run_transcribe(pick_source(v, p), m, l, d, s),
+            inputs=[video_in, path_in, model_dd, lang_dd, device_dd, save_to_source],
+            outputs=[text_out, file_out, status_out, elapsed_out],
         )
 
         gr.Markdown(
             "_Первый запуск с новой моделью может занять до минуты — "
-            "она скачивается из интернета в кэш HuggingFace._"
+            "она качается из интернета и кэшируется. Повторные запуски — мгновенно._"
         )
 
     return demo
 
-
 def main() -> None:
     demo = build_ui()
     demo.queue().launch(
-        inbrowser=True,
         server_name="127.0.0.1",
         server_port=7860,
         show_error=True,

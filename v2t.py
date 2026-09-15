@@ -50,36 +50,48 @@ _register_nvidia_dll_dirs()
 _MODEL_CACHE: dict[tuple[str, str], WhisperModel] = {}
 
 
-def get_model(name: str = "small", device: str = "auto") -> WhisperModel:
-    """Возвращает WhisperModel. Кэширует по (name, device)."""
+def get_model(name: str = "small", device: str = "auto", progress=None) -> WhisperModel:
+    """
+    Возвращает WhisperModel. Кэширует по (name, device).
+    progress(stage, info) — необязательный колбэк.
+    """
+    def report(stage, info=""):
+        if progress:
+            try:
+                progress(stage, info)
+            except Exception:
+                pass
+
     if device == "auto":
-        # Пробуем CUDA, но с "прогревом"
         try:
-            model = WhisperModel(name, device="cuda", compute_type="float16")
-            # Прогрев — короткий вызов, чтобы поймать ошибки с DLL
+            report("download", f"Подготовка модели {name} (CUDA)...")
+            model = WhisperModel(name, device="cuda", compute_type="int8_float16")
             import numpy as np
-            dummy = np.zeros(16000, dtype=np.float32)  # 1 секунда тишины
+            dummy = np.zeros(16000, dtype=np.float32)
             list(model.transcribe(dummy, language="ru")[0])
             _MODEL_CACHE[(name, "cuda")] = model
             print("[i] Используется GPU (CUDA)")
             return model
         except Exception as e:
-            print(f"[!] CUDA не завелась ({e.__class__.__name__}: {e}), использую CPU", file=sys.stderr)
+            print(f"[!] CUDA не завелась ({e.__class__.__name__}: {e}), использую CPU",
+                  file=sys.stderr)
+            report("download", f"Подготовка модели {name} (CPU)...")
             model = WhisperModel(name, device="cpu", compute_type="int8")
             _MODEL_CACHE[(name, "cpu")] = model
             return model
 
-    # Явно указанное устройство
     key = (name, device)
     if key in _MODEL_CACHE:
         return _MODEL_CACHE[key]
+
+    report("download", f"Подготовка модели {name} ({device})...")
     if device == "cuda":
         model = WhisperModel(name, device="cuda", compute_type="int8_float16")
     else:
         model = WhisperModel(name, device="cpu", compute_type="int8")
     _MODEL_CACHE[key] = model
     return model
-
+    
 # ---------- Извлечение аудио ----------
 def _find_ffmpeg() -> str:
     """
@@ -175,10 +187,18 @@ def transcribe(
             except Exception:
                 pass
 
-    video_path = Path(video).resolve()
+        video_path = Path(video).resolve()
     if not video_path.exists():
-        raise FileNotFoundError(f"Видео не найдено: {video_path}")
+        raise FileNotFoundError(f"Файл не найден: {video_path}")
 
+    VIDEO_EXTS = {".mp4", ".mkv", ".mov", ".avi", ".webm", ".flv", ".m4v", ".mpg", ".mpeg", ".wmv", ".ts"}
+    AUDIO_EXTS = {".mp3", ".wav", ".m4a", ".ogg", ".flac", ".aac", ".opus", ".wma"}
+    if video_path.suffix.lower() not in (VIDEO_EXTS | AUDIO_EXTS):
+        raise ValueError(
+            f"Похоже, это не видео/аудио: {video_path.suffix}. "
+            f"Поддерживаются: {', '.join(sorted(VIDEO_EXTS | AUDIO_EXTS))}"
+        )
+        
     if out_dir is None:
         # По умолчанию — рядом с видео
         work_dir = video_path.parent
@@ -195,7 +215,7 @@ def transcribe(
 
     # Шаг 2: модель
     report("model", f"Загрузка модели {model} ({device})")
-    m = get_model(model, device)
+    m = get_model(model, device, progress=report)
 
     # Шаг 3: транскрибация
     report("transcribe", "Распознавание речи...")

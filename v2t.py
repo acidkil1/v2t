@@ -30,6 +30,7 @@ def _register_nvidia_dll_dirs() -> None:
       2) Копирует DLL рядом с python.exe — для C++ кода ctranslate2,
          который не читает os.add_dll_directory.
       3) Предзагружает ключевые DLL в процесс.
+    Работает молча — никакого вывода в консоль.
     """
     if sys.platform != "win32":
         return
@@ -69,38 +70,30 @@ def _register_nvidia_dll_dirs() -> None:
     # --- 3. Копируем DLL рядом с python.exe (venv\Scripts) ---
     try:
         scripts_dir = Path(sys.executable).parent
-        copied = 0
         for bd in bin_dirs:
             for dll in bd.glob("*.dll"):
                 target = scripts_dir / dll.name
                 if not target.exists() or target.stat().st_size != dll.stat().st_size:
                     try:
                         shutil.copy2(dll, target)
-                        copied += 1
                     except Exception:
                         pass
-        if copied:
-            print(f"[i] Обновлено {copied} NVIDIA DLL в {scripts_dir}")
-    except Exception as e:
-        print(f"[!] Не удалось скопировать NVIDIA DLL: {e}", file=sys.stderr)
+    except Exception:
+        pass
 
     # --- 4. Предзагружаем ключевые DLL ---
     try:
         import ctypes
-        loaded = 0
         for bd in bin_dirs:
             for name in ("cublas64_12.dll", "cublasLt64_12.dll", "cudart64_12.dll"):
                 f = bd / name
                 if f.exists():
                     try:
                         ctypes.WinDLL(str(f))
-                        loaded += 1
                     except OSError:
                         continue
-        if loaded:
-            print(f"[i] Предзагружено {loaded} NVIDIA DLL")
-    except Exception as e:
-        print(f"[!] Не удалось предзагрузить NVIDIA DLL: {e}", file=sys.stderr)
+    except Exception:
+        pass
 
 
 _register_nvidia_dll_dirs()
@@ -217,7 +210,7 @@ def transcribe(
     lang: str = "ru",
     device: str = "auto",
     out_dir: str | Path | None = None,
-    keep_audio: bool = True,
+    keep_audio: bool = False,
     progress=None,
 ) -> TranscriptionResult:
     """Транскрибирует видео. Возвращает TranscriptionResult."""
@@ -300,16 +293,18 @@ def transcribe(
 
 # ---------- CLI ----------
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(
-        prog="v2t",
-        description="Транскрибация видео в текст (faster-whisper).",
-    )
+    parser = argparse.ArgumentParser(prog="v2t")
     parser.add_argument("video", help="путь к видеофайлу")
-    parser.add_argument("--model", default="small")
-    parser.add_argument("--lang", default="ru")
-    parser.add_argument("--device", default="auto", choices=["auto", "cuda", "cpu"])
-    parser.add_argument("--out", default=None)
-    parser.add_argument("--delete-audio", action="store_true")
+    parser.add_argument("--model", default="small",
+                        help="модель: tiny/base/small/medium/large-v3 (по умолчанию small)")
+    parser.add_argument("--lang", default="ru",
+                        help="язык: ru/en/... или auto (по умолчанию ru)")
+    parser.add_argument("--device", default="auto", choices=["auto", "cuda", "cpu"],
+                        help="устройство (по умолчанию auto)")
+    parser.add_argument("--out", default=None,
+                        help="папка для .ogg и _transcript.txt (по умолчанию рядом с видео)")
+    parser.add_argument("--keep-audio", action="store_true",
+                        help="сохранять промежуточный .ogg (по умолчанию удаляется)")
 
     args = parser.parse_args(argv)
 
@@ -323,7 +318,7 @@ def main(argv: list[str] | None = None) -> int:
             lang=args.lang,
             device=args.device,
             out_dir=args.out,
-            keep_audio=not args.delete_audio,
+            keep_audio=args.keep_audio,
             progress=cli_progress,
         )
     except Exception as e:

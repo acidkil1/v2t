@@ -22,3 +22,5 @@ ffmpeg/
 temp/
 
 *.mp4
+
+test/

@@ -2,6 +2,14 @@
 
 Простая утилита для транскрибации видео в текст. Работает локально, поддерживает CUDA.
 
+<p align="center">
+  <img src="screenshots/main.png" alt="Интерфейс v2t" width="80%">
+</p>
+
+<p align="center">
+  <img src="screenshots/result.png" alt="Результат транскрибации" width="80%">
+</p>
+
 * * *
 
 ## Возможности

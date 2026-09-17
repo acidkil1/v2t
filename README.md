@@ -22,7 +22,7 @@
 ### Что нужно
 
   * **Windows 10/11**
-  * **Python 3.10 – 3.12** (скачать)  
+  * **Python 3.10 – 3.12** ([скачать](https://www.python.org/downloads/))    
 ⚠️ При установке обязательно отметь галочку **«Add Python to PATH»**
   * **ffmpeg.exe** — положить в `ffmpeg/bin/` (см. ниже)
   * _(опционально)_ **NVIDIA GPU** с актуальными драйверами — ускорит транскрибацию в 5–10 раз
@@ -36,7 +36,7 @@
 
 Или просто скачай ZIP и распакуй.
 
-  2. Скачай ffmpeg essentials build (`ffmpeg-release-essentials.zip`), распакуй и положи `ffmpeg.exe` в `v2t/ffmpeg/bin/`:
+  2. Скачай [ffmpeg essentials build](https://www.gyan.dev/ffmpeg/builds/) (`ffmpeg-release-essentials.zip`), распакуй и положи `ffmpeg.exe` в `v2t/ffmpeg/bin/`:
 
     v2t/
     └── ffmpeg/

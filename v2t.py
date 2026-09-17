@@ -6,30 +6,101 @@ from __future__ import annotations
 
 import argparse
 import os
+import shutil
 import site
 import subprocess
 import sys
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
+
+# === Отключаем шумные предупреждения HuggingFace ===
+os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
+warnings.filterwarnings("ignore", category=UserWarning, module="huggingface_hub")
 
 from faster_whisper import WhisperModel
 
 
 # ---------- Регистрация NVIDIA DLL (для CUDA) ----------
 def _register_nvidia_dll_dirs() -> None:
+    """
+    Windows-специфичная регистрация NVIDIA DLL из пакетов nvidia-*-cu12.
+    Делает три вещи:
+      1) os.add_dll_directory — для Python-кода (ctypes и т.п.)
+      2) Копирует DLL рядом с python.exe — для C++ кода ctranslate2,
+         который не читает os.add_dll_directory.
+      3) Предзагружает ключевые DLL в процесс.
+    """
     if sys.platform != "win32":
         return
+
+    # --- 1. Собираем все папки nvidia/*/bin ---
+    nvidia_roots = []
     try:
+        nvidia_roots.append(Path(sys.prefix) / "Lib" / "site-packages" / "nvidia")
         for sp in site.getsitepackages():
-            nvidia_dir = Path(sp) / "nvidia"
-            if not nvidia_dir.exists():
-                continue
-            for sub in nvidia_dir.iterdir():
-                bin_dir = sub / "bin"
-                if bin_dir.exists():
-                    os.add_dll_directory(str(bin_dir))
+            nvidia_roots.append(Path(sp) / "nvidia")
+        try:
+            nvidia_roots.append(Path(site.getusersitepackages()) / "nvidia")
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+    bin_dirs = []
+    for root in nvidia_roots:
+        if not root.exists():
+            continue
+        for sub in root.iterdir():
+            bd = sub / "bin"
+            if bd.exists() and any(bd.glob("*.dll")):
+                bin_dirs.append(bd)
+
+    if not bin_dirs:
+        return
+
+    # --- 2. os.add_dll_directory ---
+    for bd in bin_dirs:
+        try:
+            os.add_dll_directory(str(bd))
+        except Exception:
+            pass
+
+    # --- 3. Копируем DLL рядом с python.exe (venv\Scripts) ---
+    try:
+        scripts_dir = Path(sys.executable).parent
+        copied = 0
+        for bd in bin_dirs:
+            for dll in bd.glob("*.dll"):
+                target = scripts_dir / dll.name
+                if not target.exists() or target.stat().st_size != dll.stat().st_size:
+                    try:
+                        shutil.copy2(dll, target)
+                        copied += 1
+                    except Exception:
+                        pass
+        if copied:
+            print(f"[i] Обновлено {copied} NVIDIA DLL в {scripts_dir}")
     except Exception as e:
-        print(f"[!] Не удалось зарегистрировать NVIDIA DLL: {e}", file=sys.stderr)
+        print(f"[!] Не удалось скопировать NVIDIA DLL: {e}", file=sys.stderr)
+
+    # --- 4. Предзагружаем ключевые DLL ---
+    try:
+        import ctypes
+        loaded = 0
+        for bd in bin_dirs:
+            for name in ("cublas64_12.dll", "cublasLt64_12.dll", "cudart64_12.dll"):
+                f = bd / name
+                if f.exists():
+                    try:
+                        ctypes.WinDLL(str(f))
+                        loaded += 1
+                    except OSError:
+                        continue
+        if loaded:
+            print(f"[i] Предзагружено {loaded} NVIDIA DLL")
+    except Exception as e:
+        print(f"[!] Не удалось предзагрузить NVIDIA DLL: {e}", file=sys.stderr)
 
 
 _register_nvidia_dll_dirs()

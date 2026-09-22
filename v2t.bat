@@ -2,17 +2,17 @@
 chcp 65001 >nul
 setlocal
 
-cd /d "%~dp0"
+set "V2T_DIR=%~dp0"
 
-if not exist venv\Scripts\python.exe (
+if not exist "%V2T_DIR%venv\Scripts\python.exe" (
     echo [X] venv not found. Run install.bat first.
     pause
     exit /b 1
 )
 
 if "%~1"=="" (
-    venv\Scripts\python.exe "%~dp0v2t.py" --help
+    "%V2T_DIR%venv\Scripts\python.exe" "%V2T_DIR%v2t.py" --help
     exit /b 0
 )
 
-venv\Scripts\python.exe "%~dp0v2t.py" %*
+"%V2T_DIR%venv\Scripts\python.exe" "%V2T_DIR%v2t.py" %*

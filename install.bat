@@ -45,5 +45,5 @@ if errorlevel 1 (
 echo.
 echo === Done ===
 echo Run: v2t.bat "path\to\video.mp4"
-echo      or start_gui.bat for GUI
+echo      or v2t_gui.bat for GUI
 pause

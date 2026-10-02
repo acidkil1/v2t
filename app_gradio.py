@@ -13,7 +13,7 @@ from pathlib import Path
 
 import gradio as gr
 
-from v2t import transcribe
+from v2t import _is_url, transcribe
 
 
 MODELS = ["tiny", "base", "small", "medium", "large-v3"]
@@ -148,33 +148,40 @@ def run_transcribe(
 
     # --- Проверки ---
     if not video_path:
-        yield pack("", None, "⚠️ Загрузи видеофайл или укажи путь.", 0, "Ожидание")
+        yield pack("", None, "⚠️ Загрузи видеофайл, укажи путь или вставь ссылку.", 0, "Ожидание")
         return
 
-    if isinstance(video_path, Path):
-        src = video_path
-    else:
-        src = Path(str(video_path).strip().strip('"'))
-
-    if not src.exists():
-        yield pack("", None, f"❌ Файл не найден: `{src}`", 0, "Ошибка")
-        return
+    raw = str(video_path).strip().strip('"')
+    is_remote = _is_url(raw)
 
     yield pack("", None, "⏳ Готовлю файл…", 3, "Подготовка", 0)
 
     work_dir = Path(tempfile.mkdtemp(prefix="v2t_gui_"))
-    local_video = work_dir / src.name
-    try:
-        shutil.copy2(src, local_video)
-    except (OSError, PermissionError) as e:
-        yield pack("", None, f"❌ Не удалось скопировать файл: {e}", 0, "Ошибка", 0)
-        return
+
+    if is_remote:
+        # Скачивание выполнит сам transcribe (Яндекс.Диск / yt-dlp)
+        src = None
+        local_video = raw
+        out_dir = work_dir
+    else:
+        src = Path(raw)
+
+        if not src.exists():
+            yield pack("", None, f"❌ Файл не найден: `{src}`", 0, "Ошибка")
+            return
+
+        local_video = work_dir / src.name
+        try:
+            shutil.copy2(src, local_video)
+        except (OSError, PermissionError) as e:
+            yield pack("", None, f"❌ Не удалось скопировать файл: {e}", 0, "Ошибка", 0)
+            return
+
+        out_dir = src.parent if save_to_source else work_dir
 
     if cancel_flag.get("cancelled"):
         yield pack("", None, "🛑 Отменено пользователем.", 0, "Отменено", time.time() - t0)
         return
-
-    out_dir = src.parent if save_to_source else work_dir
 
     # --- Разделяемое состояние между потоком и генератором ---
     state = {
@@ -186,6 +193,7 @@ def run_transcribe(
     }
 
     STAGE_MAP = {
+        "download_url": (8, "🔗 Скачивание по ссылке"),
         "extract":    (15, "🎵 Извлечение аудио"),
         "download":   (40, "📦 Загрузка модели"),
         "model":      (55, "🧠 Инициализация модели"),
@@ -268,12 +276,16 @@ def run_transcribe(
         yield pack("", None, "❌ Неизвестная ошибка: результат пуст.", 0, "Ошибка", elapsed_total)
         return
 
-    final_txt = out_dir / f"{src.stem}_transcript.txt"
-    if result.transcript_path != final_txt:
-        try:
-            shutil.copy2(result.transcript_path, final_txt)
-        except OSError:
-            final_txt = result.transcript_path
+    if src is not None:
+        final_txt = out_dir / f"{src.stem}_transcript.txt"
+        if result.transcript_path != final_txt:
+            try:
+                shutil.copy2(result.transcript_path, final_txt)
+            except OSError:
+                final_txt = result.transcript_path
+    else:
+        # Для ссылки имя файла становится известно только после скачивания
+        final_txt = result.transcript_path
 
     status = (
         f"### ✅ Готово за {elapsed_total:.1f} сек\n\n"
@@ -313,6 +325,12 @@ def build_ui() -> gr.Blocks:
                 path_in = gr.Textbox(
                     label="…или путь к файлу на диске",
                     placeholder=r"C:\path\to\video.mp4",
+                    lines=1,
+                )
+
+                url_in = gr.Textbox(
+                    label="🔗 …или ссылка (Яндекс.Диск, YouTube, VK)",
+                    placeholder="https://disk.yandex.ru/i/XXXXXXXX",
                     lines=1,
                 )
 
@@ -407,17 +425,20 @@ def build_ui() -> gr.Blocks:
             outputs=[model_dd, lang_dd, device_dd, manual_group],
         )
 
-        def pick_source(video_path, manual_path):
+        def pick_source(video_path, manual_path, url):
+            # Приоритет: ссылка > загруженный файл > путь вручную
+            if url and url.strip():
+                return url.strip()
             if video_path:
                 return video_path
             return manual_path or ""
 
-        def launch_transcribe(v, p, m, l, d, s, c):
-            yield from run_transcribe(pick_source(v, p), m, l, d, s, c)
+        def launch_transcribe(v, p, u, m, l, d, s, c):
+            yield from run_transcribe(pick_source(v, p, u), m, l, d, s, c)
 
         run_evt = run_btn.click(
             fn=launch_transcribe,
-            inputs=[video_in, path_in, model_dd, lang_dd, device_dd, save_to_source, cancel_flag],
+            inputs=[video_in, path_in, url_in, model_dd, lang_dd, device_dd, save_to_source, cancel_flag],
             outputs=[text_out, file_out, status_out, progress_out],
         )
 

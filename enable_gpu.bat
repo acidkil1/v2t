@@ -34,5 +34,5 @@ if errorlevel 1 (
 
 echo.
 echo [OK] GPU support enabled.
-echo      Restart v2t / start_gui.bat to use CUDA.
+echo      Restart v2t / v2t_gui.bat to use CUDA.
 pause
